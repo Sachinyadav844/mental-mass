@@ -1,0 +1,13 @@
+Flask
+flask-cors
+flask-jwt-extended
+opencv-python
+deepface
+transformers
+torch
+scikit-learn
+reportlab
+werkzeug
+Pillow
+openai
+fer

@@ -1,0 +1,119 @@
+### MENTALMASS Backend API Tests
+### Install REST Client extension in VS Code to run these directly
+
+@baseUrl = http://localhost:5000
+
+### Health Check
+GET {{baseUrl}}/
+
+### Register New User
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "John Doe",
+  "email": "john@example.com",
+  "password": "password123"
+}
+
+### Register Another User
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Jane Smith",
+  "email": "jane@example.com",
+  "password": "secure456"
+}
+
+### Register - Missing Fields (Error Test)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Test User",
+  "email": "test@example.com"
+}
+
+### Register - Invalid Email (Error Test)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Invalid Email User",
+  "email": "notanemail",
+  "password": "password123"
+}
+
+### Register - Password Too Short (Error Test)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Weak Password User",
+  "email": "weak@example.com",
+  "password": "123"
+}
+
+### Register - Duplicate Email (Error Test)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Duplicate User",
+  "email": "john@example.com",
+  "password": "password456"
+}
+
+### Login - Success
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "john@example.com",
+  "password": "password123"
+}
+
+### Login - Valid User 2
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "jane@example.com",
+  "password": "secure456"
+}
+
+### Login - Wrong Password (Error Test)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "john@example.com",
+  "password": "wrongpassword"
+}
+
+### Login - User Not Found (Error Test)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "nonexistent@example.com",
+  "password": "password123"
+}
+
+### Login - Missing Fields (Error Test)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "john@example.com"
+}
+
+### Get All Users (Testing)
+GET {{baseUrl}}/auth/users
+
+### Notes:
+### - Server must be running: npm run server
+### - Each request can be tested individually
+### - VS Code REST Client: https://marketplace.visualstudio.com/items?itemName=humao.rest-client
+### - Or use Postman to import these requests
