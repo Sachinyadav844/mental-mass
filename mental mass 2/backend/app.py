@@ -116,6 +116,11 @@ def health_check():
 
 
 if __name__ == "__main__":
+    from ml.sentiment_analyzer import sentiment_model as _sm, initialize_sentiment_pipeline
+
+    if _sm is None:
+        initialize_sentiment_pipeline()
+
     print(f"[APP] Starting MentalMass Backend on {FLASK_HOST}:{FLASK_PORT}")
     app.run(
         host=FLASK_HOST,

@@ -1,88 +1,66 @@
 """
-Sentiment: HuggingFace Cardiff NLP RoBERTa at startup; keyword/rule fallback if the model is missing.
+Sentiment: HuggingFace Cardiff NLP RoBERTa only. No rule-based fallback.
+When the model is missing or inference fails, returns neutral with fixed confidence.
 """
+import os
 import re
 
-from utils.error_handler import MLModelError, ValidationError
+from utils.error_handler import ValidationError
 from config import (
+    DEBUG,
     SENTIMENT_PRIMARY_MODEL,
-    SENTIMENT_FALLBACK_MODEL,
     SENTIMENT_SHORT_TEXT_THRESHOLD,
     NEGATIVE_KEYWORDS,
     POSITIVE_KEYWORDS,
 )
 
 sentiment_model = None
-_sentiment_model_name = None
 SENTIMENT_AVAILABLE = False
 
 
+def _pipeline_device():
+    """Use GPU when available; otherwise CPU (-1)."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return 0
+    except ImportError:
+        pass
+    return -1
+
+
 def initialize_sentiment_pipeline():
-    """Load transformers sentiment pipeline once at startup."""
-    global sentiment_model, _sentiment_model_name, SENTIMENT_AVAILABLE
-    try:
-        from transformers import pipeline as hf_pipeline
-
-        try:
-            print("[SENTIMENT] Loading model:", SENTIMENT_PRIMARY_MODEL)
-            sentiment_model = hf_pipeline(
-                "sentiment-analysis",
-                model=SENTIMENT_PRIMARY_MODEL,
-            )
-            _sentiment_model_name = SENTIMENT_PRIMARY_MODEL
-            SENTIMENT_AVAILABLE = True
-            print("Sentiment model loaded")
-            return
-        except Exception as e:
-            print("Sentiment failed:", e)
-            print("[SENTIMENT] Trying fallback:", SENTIMENT_FALLBACK_MODEL)
-            sentiment_model = hf_pipeline(
-                "sentiment-analysis",
-                model=SENTIMENT_FALLBACK_MODEL,
-            )
-            _sentiment_model_name = SENTIMENT_FALLBACK_MODEL
-            SENTIMENT_AVAILABLE = True
-            print("Sentiment model loaded (fallback)")
-    except Exception as e:
-        sentiment_model = None
-        _sentiment_model_name = None
-        SENTIMENT_AVAILABLE = False
-        print("Sentiment failed:", e)
-
-
-def load_sentiment_model(model_name=None):
-    """Return active pipeline, loading if needed (e.g. after fork)."""
-    global sentiment_model, _sentiment_model_name, SENTIMENT_AVAILABLE
-
-    model_name = model_name or SENTIMENT_PRIMARY_MODEL
-    if sentiment_model is not None and (model_name is None or _sentiment_model_name == model_name):
-        return sentiment_model
+    global sentiment_model, SENTIMENT_AVAILABLE
 
     try:
-        from transformers import pipeline as hf_pipeline
+        from transformers import pipeline
 
-        sentiment_model = hf_pipeline("sentiment-analysis", model=model_name)
-        _sentiment_model_name = model_name
+        print("[SENTIMENT] Loading HuggingFace model...")
+        device = _pipeline_device()
+        sentiment_model = pipeline(
+            "sentiment-analysis",
+            model=SENTIMENT_PRIMARY_MODEL,
+            device=device,
+        )
         SENTIMENT_AVAILABLE = True
-        return sentiment_model
+        print("Sentiment model loaded successfully")
     except Exception as e:
-        print(f"[SENTIMENT] Failed to load {model_name}: {str(e)}")
-        raise MLModelError(f"Failed to load sentiment model: {str(e)}")
+        print("Sentiment model failed:", e)
+        sentiment_model = None
+        SENTIMENT_AVAILABLE = False
 
 
-def clean_text(text):
-    if not isinstance(text, str):
-        return ""
-    text = text.strip().lower()
-    text = re.sub(r"https?://\S+", "", text)
-    text = re.sub(r"@\w+", "", text)
-    text = re.sub(r"#\w+", "", text)
-    text = re.sub(r"[^\w\s\.,!\?\'\"-]", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+def preprocess_for_inference(text: str) -> str:
+    """Lowercase, collapse whitespace, strip; remove most special characters."""
+    s = str(text).strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"[^\w\s\.,!\?\'\"-]", "", s)
+    return s.strip()
 
 
-def extract_emotion_keywords(text):
+def extract_emotion_keywords(text: str):
+    """Deterministic keyword scan for API `keywords` field (no scoring)."""
     keywords = []
     text_lower = text.lower()
     for keyword in NEGATIVE_KEYWORDS:
@@ -91,75 +69,68 @@ def extract_emotion_keywords(text):
     for keyword in POSITIVE_KEYWORDS:
         if keyword in text_lower:
             keywords.append(keyword)
-    return list(set(keywords))
-
-
-def apply_keyword_boosting(sentiment, confidence, text):
-    text_lower = text.lower()
-    word_count = len(text.split())
-    if word_count >= SENTIMENT_SHORT_TEXT_THRESHOLD:
-        return sentiment, confidence
-    has_negative = any(keyword in text_lower for keyword in NEGATIVE_KEYWORDS)
-    has_positive = any(keyword in text_lower for keyword in POSITIVE_KEYWORDS)
-    if has_negative and not has_positive:
-        return "negative", min(confidence + 0.15, 0.98)
-    if has_positive and not has_negative:
-        return "positive", min(confidence + 0.15, 0.98)
-    if has_negative and has_positive:
-        return "neutral", max(confidence - 0.10, 0.3)
-    return sentiment, confidence
+    return sorted(set(keywords))
 
 
 def _label_to_sentiment(label):
     label_upper = str(label).upper()
-    if label_upper == "LABEL_2" or label_upper == "POSITIVE":
+    if label_upper == "LABEL_2":
         return "positive"
-    if label_upper == "LABEL_0" or label_upper == "NEGATIVE":
+    if label_upper == "LABEL_0":
         return "negative"
-    if label_upper == "LABEL_1" or label_upper == "NEUTRAL":
+    if label_upper == "LABEL_1":
         return "neutral"
     return "neutral"
 
 
 def analyze_sentiment(text):
-    if not text or not isinstance(text, str):
-        raise ValidationError("Text must be a non-empty string")
+    """
+    Run Cardiff RoBERTa when loaded; otherwise neutral fallback.
+    Returns dict with sentiment, confidence; optional source for fallback paths.
+    """
+    if not isinstance(text, str):
+        return {
+            "sentiment": "neutral",
+            "confidence": 0.5,
+            "source": "fallback",
+        }
 
-    text = clean_text(text)
-    if not text:
-        raise ValidationError("Text is empty after cleaning")
+    text_input = preprocess_for_inference(text)[:512]
+    if not text_input:
+        return {
+            "sentiment": "neutral",
+            "confidence": 0.5,
+            "source": "fallback",
+        }
 
-    word_count = len(text.split())
-    is_short_text = word_count < SENTIMENT_SHORT_TEXT_THRESHOLD
-
-    clf = sentiment_model
-    if clf is None:
-        return _rule_based_sentiment_analysis(text)
+    if sentiment_model is None:
+        return {
+            "sentiment": "neutral",
+            "confidence": 0.5,
+            "source": "fallback",
+        }
 
     try:
-        text_input = text[:512]
-        out = clf(text_input)[0]
-        label = out.get("label", "LABEL_1")
-        confidence = float(out.get("score", 0.5))
+        result = sentiment_model(text_input)[0]
+        if DEBUG or os.getenv("SENTIMENT_DEBUG", "").lower() in ("1", "true", "yes"):
+            print("Input text:", text_input)
+            print("Model output:", result)
+
+        label = result.get("label", "LABEL_1")
+        confidence = float(result.get("score", 0.5))
         sentiment = _label_to_sentiment(label)
-        keywords = extract_emotion_keywords(text)
-        if is_short_text:
-            sentiment, confidence = apply_keyword_boosting(sentiment, confidence, text)
-        if confidence < 0.3:
-            sentiment = "neutral"
+
         return {
             "sentiment": sentiment,
             "confidence": round(confidence, 4),
-            "keywords": keywords,
-            "model_used": "cardiffnlp/twitter-roberta-base-sentiment"
-            if _sentiment_model_name == SENTIMENT_PRIMARY_MODEL
-            else (_sentiment_model_name or "transformers"),
-            "word_count": word_count,
-            "is_short_text": is_short_text,
         }
     except Exception as e:
-        print(f"[SENTIMENT] Transformer inference failed: {e} — using rule-based fallback")
-        return _rule_based_sentiment_analysis(text)
+        print("Sentiment error:", e)
+        return {
+            "sentiment": "neutral",
+            "confidence": 0.5,
+            "source": "fallback",
+        }
 
 
 def is_sentiment_available():
@@ -167,14 +138,35 @@ def is_sentiment_available():
 
 
 def analyze_text_sentiment(text):
-    result = analyze_sentiment(text)
+    """
+    Public API for /analyze_text: same response keys as before.
+    """
+    if not text or not isinstance(text, str):
+        raise ValidationError("Text must be a non-empty string")
+
+    stripped = str(text).strip()
+    if not stripped:
+        raise ValidationError("Text field is required and cannot be empty")
+
+    pre = preprocess_for_inference(stripped)
+    word_count = len(pre.split()) if pre else 0
+    is_short_text = word_count < SENTIMENT_SHORT_TEXT_THRESHOLD
+
+    result = analyze_sentiment(stripped)
+    source = result.get("source")
+    model_used = (
+        SENTIMENT_PRIMARY_MODEL
+        if SENTIMENT_AVAILABLE and source != "fallback"
+        else "fallback"
+    )
+
     return {
         "sentiment": result["sentiment"],
-        "confidence": result["confidence"],
-        "keywords": result.get("keywords", []),
-        "model_used": result.get("model_used", "unknown"),
-        "word_count": result.get("word_count", len(str(text).split())),
-        "is_short_text": result.get("is_short_text", False),
+        "confidence": float(result["confidence"]),
+        "keywords": extract_emotion_keywords(pre) if pre else [],
+        "model_used": model_used,
+        "word_count": word_count,
+        "is_short_text": is_short_text,
     }
 
 
@@ -182,27 +174,3 @@ def get_sentiment_numeric_score(sentiment):
     from config import SENTIMENT_NUMERIC_MAP
 
     return SENTIMENT_NUMERIC_MAP.get(sentiment, 5)
-
-
-def _rule_based_sentiment_analysis(text):
-    text_lower = text.lower()
-    negative_count = sum(text_lower.count(word) for word in NEGATIVE_KEYWORDS)
-    positive_count = sum(text_lower.count(word) for word in POSITIVE_KEYWORDS)
-    if negative_count > positive_count:
-        sentiment = "negative"
-        confidence = min(0.5 + (negative_count * 0.1), 0.95)
-    elif positive_count > negative_count:
-        sentiment = "positive"
-        confidence = min(0.5 + (positive_count * 0.1), 0.95)
-    else:
-        sentiment = "neutral"
-        confidence = 0.5
-    keywords = extract_emotion_keywords(text)
-    return {
-        "sentiment": sentiment,
-        "confidence": round(confidence, 4),
-        "keywords": keywords,
-        "model_used": "rule_based",
-        "word_count": len(text.split()),
-        "is_short_text": len(text.split()) < SENTIMENT_SHORT_TEXT_THRESHOLD,
-    }
