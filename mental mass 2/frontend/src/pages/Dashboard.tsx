@@ -7,7 +7,7 @@ import {
   Download,
   Loader2,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Navbar from "@/components/Navbar";
 import Sidebar from "@/components/Sidebar";
 import Footer from "@/components/Footer";
@@ -18,6 +18,7 @@ import {
 } from "@/components/DashboardCharts";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import api from "@/services/axiosConfig";
 
 const stats = [
   {
@@ -56,7 +57,185 @@ const stats = [
 
 const Dashboard = () => {
   const [exporting, setExporting] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState([
+    {
+      label: "Average Mood Score",
+      value: "--",
+      sub: "Loading...",
+      icon: TrendingUp,
+      color: "bg-primary/10 text-primary",
+      trend: "up",
+    },
+    {
+      label: "Highest Risk Level",
+      value: "--",
+      sub: "Loading...",
+      icon: Award,
+      color: "bg-warning-soft text-warning",
+      trend: "neutral",
+    },
+    {
+      label: "Most Frequent Emotion",
+      value: "--",
+      sub: "Loading...",
+      icon: Smile,
+      color: "bg-success-soft text-success",
+      trend: "up",
+    },
+    {
+      label: "Total Sessions",
+      value: "0",
+      sub: "All time",
+      icon: Activity,
+      color: "bg-lavender-soft text-lavender",
+      trend: "up",
+    },
+  ]);
+  const [trendData, setTrendData] = useState<Array<{ day: string; score: number }>>([]);
+  const [emotionData, setEmotionData] = useState<Array<{ name: string; value: number; color: string }>>([]);
+  const [riskData, setRiskData] = useState<Array<{ range: string; count: number; fill: string }>>([]);
   const { toast } = useToast();
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, []);
+
+  const fetchDashboardData = async () => {
+    try {
+      setLoading(true);
+      const response = await api.get("/sessions");
+      const sessions = response.data?.sessions || [];
+
+      if (sessions.length === 0) {
+        setLoading(false);
+        console.log("No sessions data available");
+        return;
+      }
+
+      // Calculate statistics
+      const avgScore = sessions.reduce((sum, s) => sum + (s.mood_score || 0), 0) / sessions.length;
+      
+      // Get emotion distribution
+      const emotionCounts: Record<string, number> = {};
+      const emotionColors: Record<string, string> = {
+        happy: "#22c55e",
+        neutral: "#818cf8",
+        sad: "#60a5fa",
+        surprised: "#f59e0b",
+        angry: "#ef4444",
+        fear: "#ec4899",
+        disgust: "#8b5cf6",
+      };
+      
+      sessions.forEach(s => {
+        if (s.emotion) {
+          emotionCounts[s.emotion] = (emotionCounts[s.emotion] || 0) + 1;
+        }
+      });
+      
+      const topEmotions = Object.entries(emotionCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+      
+      const newEmotionData = topEmotions.map(([emotion, count]) => ({
+        name: emotion.charAt(0).toUpperCase() + emotion.slice(1),
+        value: count,
+        color: emotionColors[emotion] || "#6366f1",
+      }));
+      
+      // Get risk distribution
+      const riskCounts = { low: 0, medium: 0, high: 0 };
+      sessions.forEach(s => {
+        const score = s.mood_score || 0;
+        if (score > 70) riskCounts.low++;
+        else if (score >= 35) riskCounts.medium++;
+        else riskCounts.high++;
+      });
+      
+      const newRiskData = [
+        { range: "Low (>70)", count: riskCounts.low, fill: "#22c55e" },
+        { range: "Medium (35-70)", count: riskCounts.medium, fill: "#f59e0b" },
+        { range: "High (<35)", count: riskCounts.high, fill: "#ef4444" },
+      ];
+      
+      // Get last 7 days trend
+      const last7Days = getLast7DaysTrend(sessions);
+      
+      // Update stats
+      const mostFrequentEmotion = topEmotions[0]?.[0] || "Not Available";
+      const riskLevel = avgScore > 70 ? "Low" : avgScore >= 35 ? "Moderate" : "High";
+      
+      setStats([
+        {
+          label: "Average Mood Score",
+          value: avgScore.toFixed(1),
+          sub: `Across ${sessions.length} sessions`,
+          icon: TrendingUp,
+          color: "bg-primary/10 text-primary",
+          trend: "up",
+        },
+        {
+          label: "Risk Level",
+          value: riskLevel,
+          sub: "Based on avg score",
+          icon: Award,
+          color: riskLevel === "High" ? "bg-danger-soft text-danger" : "bg-warning-soft text-warning",
+          trend: "neutral",
+        },
+        {
+          label: "Most Frequent Emotion",
+          value: mostFrequentEmotion.charAt(0).toUpperCase() + mostFrequentEmotion.slice(1),
+          sub: `${topEmotions[0]?.[1] || 0} occurrences`,
+          icon: Smile,
+          color: "bg-success-soft text-success",
+          trend: "up",
+        },
+        {
+          label: "Total Sessions",
+          value: sessions.length.toString(),
+          sub: "All time",
+          icon: Activity,
+          color: "bg-lavender-soft text-lavender",
+          trend: "up",
+        },
+      ]);
+      
+      setTrendData(last7Days);
+      setEmotionData(newEmotionData.length > 0 ? newEmotionData : []);
+      setRiskData(newRiskData);
+    } catch (error) {
+      console.error("Failed to fetch dashboard data:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load dashboard data",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getLast7DaysTrend = (sessions: any[]) => {
+    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const dayScores: Record<string, number[]> = {};
+    
+    sessions.forEach(s => {
+      if (s.timestamp) {
+        const date = new Date(s.timestamp);
+        const dayOfWeek = days[date.getDay()];
+        if (!dayScores[dayOfWeek]) dayScores[dayOfWeek] = [];
+        if (s.mood_score) dayScores[dayOfWeek].push(s.mood_score);
+      }
+    });
+    
+    return days.map(day => ({
+      day,
+      score: dayScores[day]?.length > 0 
+        ? Math.round(dayScores[day].reduce((a, b) => a + b) / dayScores[day].length)
+        : 50,
+    }));
+  };
 
   const handleExport = async () => {
     setExporting(true);
@@ -138,7 +317,13 @@ const Dashboard = () => {
                 <TrendingUp className="w-4 h-4 text-primary" /> Mood Trend (7
                 Days)
               </h3>
-              <MoodTrendChart />
+              {loading ? (
+                <div className="h-[220px] flex items-center justify-center text-muted-foreground">
+                  <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading...
+                </div>
+              ) : (
+                <MoodTrendChart data={trendData} />
+              )}
             </div>
             <div
               className="glass-card p-5 animate-fade-in-up"
@@ -147,7 +332,13 @@ const Dashboard = () => {
               <h3 className="font-display font-semibold mb-4 flex items-center gap-2">
                 <Smile className="w-4 h-4 text-lavender" /> Emotion Distribution
               </h3>
-              <EmotionPieChart />
+              {loading ? (
+                <div className="h-[220px] flex items-center justify-center text-muted-foreground">
+                  <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading...
+                </div>
+              ) : (
+                <EmotionPieChart data={emotionData} />
+              )}
             </div>
           </div>
 
@@ -159,7 +350,13 @@ const Dashboard = () => {
               <Activity className="w-4 h-4 text-warning" /> Risk Level
               Distribution
             </h3>
-            <RiskDistributionChart />
+            {loading ? (
+              <div className="h-[180px] flex items-center justify-center text-muted-foreground">
+                <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading...
+              </div>
+            ) : (
+              <RiskDistributionChart data={riskData} />
+            )}
           </div>
         </main>
         <Footer />

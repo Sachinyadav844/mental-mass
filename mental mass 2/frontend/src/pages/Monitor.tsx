@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Sparkles,
   Scan,
+  Loader2,
 } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
@@ -18,7 +19,7 @@ import RecommendationCard from "@/components/RecommendationCard";
 import AgeDetectionCard from "@/components/AgeDetectionCard";
 import ChatbotBox from "@/components/ChatbotBox";
 import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 type SectionCardProps = {
   icon: React.ComponentType<{ className?: string }>;
@@ -47,14 +48,68 @@ const SectionCard = ({
 );
 
 const Monitor = () => {
-  const [score, setScore] = useState(62);
+  const [emotionData, setEmotionData] = useState<any>(null);
+  const [sentimentData, setSentimentData] = useState<any>(null);
+  const [score, setScore] = useState(50);
   const [calculating, setCalculating] = useState(false);
+  const { toast } = useToast();
 
-  const recalculate = async () => {
+  const handleEmotionResult = async (faceResult: any) => {
+    setEmotionData(faceResult);
+    console.log("Emotion result:", faceResult);
+    await recalculateScore(faceResult, sentimentData);
+  };
+
+  const handleSentimentResult = async (sentimentResult: any) => {
+    setSentimentData(sentimentResult);
+    console.log("Sentiment result:", sentimentResult);
+    await recalculateScore(emotionData, sentimentResult);
+  };
+
+  const recalculateScore = async (emotion: any, sentiment: any) => {
+    if (!emotion || !sentiment) return;
+
     setCalculating(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    setScore(Math.floor(Math.random() * 80) + 15);
-    setCalculating(false);
+    try {
+      // Map sentiment to numeric value
+      const sentimentScore = sentiment.sentiment === 'positive' ? 7 : 
+                            sentiment.sentiment === 'negative' ? 3 : 5;
+      
+      // Map emotion to numeric value
+      const emotionScore = getEmotionScore(emotion.emotion);
+      
+      // Calculate combined score (40% emotion, 35% sentiment, 25% self-score)
+      const calculatedScore = Math.round((emotionScore * 0.4 + sentimentScore * 0.35) * 10);
+      
+      // Ensure score is between 0-100
+      const finalScore = Math.max(0, Math.min(100, calculatedScore || 50));
+      setScore(finalScore);
+      
+      console.log("Calculated score:", finalScore);
+    } catch (error) {
+      console.error("Score calculation error:", error);
+      toast({
+        title: "Calculation Error",
+        description: "Could not calculate mood score",
+        variant: "destructive",
+      });
+    } finally {
+      setCalculating(false);
+    }
+  };
+
+  const getEmotionScore = (emotion: string): number => {
+    const emotionScores: Record<string, number> = {
+      happy: 8,
+      sad: 2,
+      angry: 2,
+      fear: 3,
+      surprise: 6,
+      disgust: 2,
+      neutral: 5,
+      uncertain: 5,
+    };
+    return emotionScores[emotion.toLowerCase()] || 5;
   };
 
   return (
@@ -80,7 +135,7 @@ const Monitor = () => {
             title="Facial Emotion Detection"
             color="bg-lavender-soft text-lavender"
           >
-            <WebcamCapture />
+            <WebcamCapture onResult={handleEmotionResult} />
           </SectionCard>
 
           <SectionCard
@@ -88,7 +143,7 @@ const Monitor = () => {
             title="Text Sentiment Analysis"
             color="bg-primary/10 text-primary"
           >
-            <TextSentimentBox />
+            <TextSentimentBox onResult={handleSentimentResult} />
           </SectionCard>
 
           <SectionCard
@@ -101,14 +156,14 @@ const Monitor = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={recalculate}
-                disabled={calculating}
+                onClick={() => emotionData && sentimentData && recalculateScore(emotionData, sentimentData)}
+                disabled={calculating || !emotionData || !sentimentData}
                 className="w-full"
               >
                 {calculating ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin mr-2" />{" "}
-                    Recalculating...
+                    Calculating...
                   </>
                 ) : (
                   "Recalculate Score"

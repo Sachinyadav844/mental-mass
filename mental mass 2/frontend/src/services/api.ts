@@ -8,11 +8,7 @@ export const register = (data: {
   password: string;
 }) => api.post("/register", data);
 export const analyzeFace = (data: FormData) =>
-  api
-    .post("/analyze_face", data, {
-      headers: { "Content-Type": "multipart/form-data" },
-    })
-    .then((response) => response.data);
+  api.post("/analyze_face", data).then((response) => response.data);
 export const analyzeFaceImage = (
   base64Image: string,
   isWebcam: boolean = true

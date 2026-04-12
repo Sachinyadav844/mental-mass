@@ -75,10 +75,22 @@ const renderLabel = ({
   ) : null;
 };
 
-export const MoodTrendChart = () => (
+interface MoodTrendChartProps {
+  data?: Array<{ day: string; score: number }>;
+}
+
+interface EmotionPieChartProps {
+  data?: Array<{ name: string; value: number; color: string }>;
+}
+
+interface RiskDistributionChartProps {
+  data?: Array<{ range: string; count: number; fill: string }>;
+}
+
+export const MoodTrendChart = ({ data = trendData }: MoodTrendChartProps) => (
   <ResponsiveContainer width="100%" height={220}>
     <LineChart
-      data={trendData}
+      data={data}
       margin={{ top: 5, right: 10, left: -20, bottom: 5 }}
     >
       <CartesianGrid strokeDasharray="3 3" stroke="hsl(230 25% 88%)" />
@@ -107,11 +119,11 @@ export const MoodTrendChart = () => (
   </ResponsiveContainer>
 );
 
-export const EmotionPieChart = () => (
+export const EmotionPieChart = ({ data = emotionData }: EmotionPieChartProps) => (
   <ResponsiveContainer width="100%" height={220}>
     <PieChart>
       <Pie
-        data={emotionData}
+        data={data}
         cx="50%"
         cy="50%"
         outerRadius={85}
@@ -119,7 +131,7 @@ export const EmotionPieChart = () => (
         labelLine={false}
         label={renderLabel}
       >
-        {emotionData.map((entry, index) => (
+        {data.map((entry, index) => (
           <Cell key={index} fill={entry.color} />
         ))}
       </Pie>
@@ -129,10 +141,10 @@ export const EmotionPieChart = () => (
   </ResponsiveContainer>
 );
 
-export const RiskDistributionChart = () => (
+export const RiskDistributionChart = ({ data = riskData }: RiskDistributionChartProps) => (
   <ResponsiveContainer width="100%" height={180}>
     <BarChart
-      data={riskData}
+      data={data}
       margin={{ top: 5, right: 10, left: -20, bottom: 5 }}
     >
       <CartesianGrid strokeDasharray="3 3" stroke="hsl(230 25% 88%)" />
@@ -143,7 +155,7 @@ export const RiskDistributionChart = () => (
       <YAxis tick={{ fontSize: 11, fill: "hsl(230 15% 52%)" }} />
       <Tooltip contentStyle={{ borderRadius: "8px", fontSize: 12 }} />
       <Bar dataKey="count" radius={[6, 6, 0, 0]} name="Sessions">
-        {riskData.map((entry, i) => (
+        {data.map((entry, i) => (
           <Cell key={i} fill={entry.fill} />
         ))}
       </Bar>

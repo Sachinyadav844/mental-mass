@@ -3,6 +3,7 @@ import { Camera, RefreshCw, Upload, Loader2, Video, Square } from "lucide-react"
 import { Button } from "@/components/ui/button";
 import EmotionBadge from "./EmotionBadge";
 import { analyzeFace, analyzeFaceImage } from "@/services/api";
+import { getErrorMessage } from "@/services/errorHandler";
 
 interface FaceResult {
   emotion: string;
@@ -19,6 +20,7 @@ const WebcamCapture = ({
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<FaceResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"upload" | "webcam">("upload");
   const [streaming, setStreaming] = useState(false);
   const [streamingResult, setStreamingResult] = useState<FaceResult | null>(null);
@@ -83,12 +85,17 @@ const WebcamCapture = ({
 
     console.log("BASE64:", frameBase64?.slice(0, 50));
     setLoading(true);
+    setError(null);
     try {
       const response = await analyzeFaceImage(frameBase64);
       setStreamingResult(response);
+      setError(null);
       onResult?.(response);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Webcam analysis error:", error);
+      const errorMsg = getErrorMessage(error, "Face analysis");
+      setError(errorMsg);
+      setStreamingResult(null);
     } finally {
       setLoading(false);
     }
@@ -128,15 +135,19 @@ const WebcamCapture = ({
 
     console.log("FILE:", file);
     setLoading(true);
+    setError(null);
     try {
       const formData = new FormData();
       formData.append("image", file);
       const analysisResult = await analyzeFace(formData);
       setResult(analysisResult);
+      setError(null);
       onResult?.(analysisResult);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Analysis error:", error);
-      alert("Failed to analyze image");
+      const errorMsg = getErrorMessage(error, "Image analysis");
+      setError(errorMsg);
+      setResult(null);
     } finally {
       setLoading(false);
     }
@@ -155,6 +166,7 @@ const WebcamCapture = ({
     setMode(newMode);
     setResult(null);
     setStreamingResult(null);
+    setError(null);
   };
 
   // Cleanup on unmount
@@ -171,6 +183,7 @@ const WebcamCapture = ({
     setCaptured(null);
     setFile(null);
     setResult(null);
+    setError(null);
   };
 
   return (
@@ -194,6 +207,12 @@ const WebcamCapture = ({
           <Video className="w-4 h-4 mr-2" /> Live
         </Button>
       </div>
+
+      {error && (
+        <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm animate-fade-in">
+          {error}
+        </div>
+      )}
 
       {/* Upload Mode */}
       {mode === "upload" && (

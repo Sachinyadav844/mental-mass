@@ -3,6 +3,7 @@ import { MessageSquare, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import api from "@/services/api";
+import { getErrorMessage } from "@/services/errorHandler";
 
 interface SentimentResult {
   sentiment: "positive" | "negative" | "neutral";
@@ -26,10 +27,12 @@ const TextSentimentBox = ({
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<SentimentResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const analyze = async () => {
     if (!text.trim()) return;
     setLoading(true);
+    setError(null);
     try {
       const response = await api.post("/analyze_text", { text });
       const data = response.data;
@@ -41,22 +44,18 @@ const TextSentimentBox = ({
           keywords: Array.isArray(data.keywords) ? data.keywords : [],
         };
         setResult(r);
+        setError(null);
         onResult?.(r);
       } else {
-        throw new Error(data?.message || "Invalid sentiment response from server");
+        const errorMsg = data?.message || data?.error || "Invalid sentiment response from server";
+        setError(errorMsg);
+        setResult(null);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Sentiment analysis error", error);
-      // fallback
-      const sentiments: SentimentResult["sentiment"][] = ["positive", "negative", "neutral"];
-      const s = sentiments[Math.floor(Math.random() * sentiments.length)];
-      const fallback: SentimentResult = {
-        sentiment: s,
-        score: 0.55 + Math.random() * 0.43,
-        keywords: ["stress", "work", "tired"].slice(0, 2),
-      };
-      setResult(fallback);
-      onResult?.(fallback);
+      const errorMsg = getErrorMessage(error, "Sentiment analysis");
+      setError(errorMsg);
+      setResult(null);
     } finally {
       setLoading(false);
     }
@@ -92,6 +91,12 @@ const TextSentimentBox = ({
           )}
         </Button>
       </div>
+
+      {error && (
+        <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm animate-fade-in">
+          {error}
+        </div>
+      )}
 
       {result && (
         <div
