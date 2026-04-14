@@ -5,6 +5,7 @@ Handles POST /analyze_face endpoint
 from flask import Blueprint, request, jsonify
 from utils.error_handler import error_response, success_response, ImageProcessingError, MLModelError
 from utils.logger import log_access, log_error
+from utils.socketio_manager import emit_emotion_detected
 from utils.image_utils import load_image_from_file, load_image_from_base64, validate_image_dimensions
 from ml.emotion_detector import analyze_emotion
 from ml.sentiment_analyzer import is_sentiment_available
@@ -42,7 +43,7 @@ def analyze_face():
         log_access('/analyze_face', 'POST')
         print('[FACE] Request received', 'files=', bool(request.files), 'json=', request.is_json)
         print('[FACE] request.files keys=', list(request.files.keys()))
-        print('[FACE] raw json payload=', request.get_json(silent=True))
+        print('[FACE] request.json=', request.get_json(silent=True))
 
         # =====================================================================
         # LOAD IMAGE
@@ -130,6 +131,14 @@ def analyze_face():
             'source': source_type
         }
 
+        # Emit real-time emotion detection event
+        emit_emotion_detected({
+            'emotion': emotion_result['emotion'],
+            'confidence': emotion_result['confidence'],
+            'face_detected': emotion_result['face_detected'],
+            'timestamp': time.time()
+        })
+
         return success_response(response_data)
 
     except Exception as e:
@@ -147,12 +156,10 @@ def run_emotion_analysis(img):
 @face_bp.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    from ml.emotion_detector import DEEPFACE_AVAILABLE
+    from ml.ai_config import deepface_available, sentiment_available, chatbot_available
 
     return success_response({
-        'emotion_detection': {
-            'available': DEEPFACE_AVAILABLE,
-            'deepface_available': DEEPFACE_AVAILABLE,
-        },
-        'sentiment_available': is_sentiment_available()
+        'emotion_detection': deepface_available,
+        'sentiment': sentiment_available,
+        'chatbot': chatbot_available
     })

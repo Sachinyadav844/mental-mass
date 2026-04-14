@@ -50,7 +50,7 @@ const SectionCard = ({
 const Monitor = () => {
   const [emotionData, setEmotionData] = useState<any>(null);
   const [sentimentData, setSentimentData] = useState<any>(null);
-  const [score, setScore] = useState(50);
+  const [scoreData, setScoreData] = useState<any>(null);
   const [calculating, setCalculating] = useState(false);
   const { toast } = useToast();
 
@@ -71,21 +71,19 @@ const Monitor = () => {
 
     setCalculating(true);
     try {
-      // Map sentiment to numeric value
-      const sentimentScore = sentiment.sentiment === 'positive' ? 7 : 
-                            sentiment.sentiment === 'negative' ? 3 : 5;
+      // Use backend API for score calculation
+      const { calculateScore } = await import("@/services/api");
+      const result = await calculateScore({
+        emotion: emotion.emotion,
+        sentiment: sentiment.sentiment
+      });
       
-      // Map emotion to numeric value
-      const emotionScore = getEmotionScore(emotion.emotion);
-      
-      // Calculate combined score (40% emotion, 35% sentiment, 25% self-score)
-      const calculatedScore = Math.round((emotionScore * 0.4 + sentimentScore * 0.35) * 10);
-      
-      // Ensure score is between 0-100
-      const finalScore = Math.max(0, Math.min(100, calculatedScore || 50));
-      setScore(finalScore);
-      
-      console.log("Calculated score:", finalScore);
+      if (result.success && result.data) {
+        setScoreData(result.data);
+        console.log("Backend calculated score:", result.data.score, "Risk:", result.data.risk_level);
+      } else {
+        throw new Error(result.message || "Failed to calculate score");
+      }
     } catch (error) {
       console.error("Score calculation error:", error);
       toast({
@@ -152,7 +150,7 @@ const Monitor = () => {
             color="bg-success-soft text-success"
           >
             <div className="flex flex-col items-center gap-4">
-              <MoodScoreCard score={score} />
+              <MoodScoreCard score={scoreData?.score || 50} />
               <Button
                 variant="outline"
                 size="sm"
@@ -177,9 +175,9 @@ const Monitor = () => {
             title="Risk Alert"
             color="bg-warning-soft text-warning"
           >
-            <RiskAlert score={score} />
+            <RiskAlert score={scoreData?.score || 50} />
             <p className="text-xs text-muted-foreground">
-              Score: {score}/100 · Updated just now
+              Score: {scoreData?.score || 50}/100 · Risk: {scoreData?.risk_level || 'Unknown'} · Updated just now
             </p>
           </SectionCard>
 

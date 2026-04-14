@@ -5,7 +5,9 @@ Handles POST /analyze_text endpoint
 from flask import Blueprint, request
 from utils.error_handler import error_response, success_response, ValidationError, MLModelError
 from utils.logger import log_access, log_error
+from utils.socketio_manager import emit_dashboard_update
 from ml.sentiment_analyzer import analyze_text_sentiment
+import time
 
 text_bp = Blueprint('text', __name__)
 
@@ -83,6 +85,13 @@ def analyze_text():
             'word_count': result['word_count'],
             'is_short_text': result['is_short_text']
         }
+        
+        # Emit real-time sentiment analysis event
+        emit_dashboard_update({
+            'sentiment': result['sentiment'],
+            'confidence': result['confidence'],
+            'timestamp': time.time()
+        })
         
         return success_response(response_data)
     

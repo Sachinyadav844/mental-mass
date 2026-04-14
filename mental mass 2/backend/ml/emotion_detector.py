@@ -14,9 +14,10 @@ from utils.error_handler import MLModelError, ImageProcessingError
 from ml.face_validator import validate_face_detected, extract_face_region
 from config import DEEPFACE_NUM_PASSES, EMOTION_NUMERIC_MAP
 
+# Import global models from ai_config
+from ml.ai_config import deepface_available, emotion_model
+
 DeepFace = None
-emotion_model = None
-DEEPFACE_AVAILABLE = False
 DEEPFACE_ERROR = None
 
 _model_lock = threading.Lock()
@@ -34,33 +35,8 @@ EMOTION_MAP = {
 }
 
 
-def initialize_deepface():
-    """Load DeepFace and build Emotion model (startup only)."""
-    global DeepFace, emotion_model, DEEPFACE_AVAILABLE, DEEPFACE_ERROR
-    try:
-        from deepface import DeepFace as _DeepFace
-
-        DeepFace = _DeepFace
-        try:
-            emotion_model = DeepFace.build_model("Emotion")
-            DEEPFACE_AVAILABLE = True
-            DEEPFACE_ERROR = None
-            print("DeepFace loaded")
-        except Exception as e:
-            emotion_model = None
-            DEEPFACE_AVAILABLE = False
-            DEEPFACE_ERROR = str(e)
-            print("DeepFace failed:", e)
-    except Exception as e:
-        DeepFace = None
-        emotion_model = None
-        DEEPFACE_AVAILABLE = False
-        DEEPFACE_ERROR = str(e)
-        print("DeepFace failed:", e)
-
-
 def is_deepface_available():
-    return DEEPFACE_AVAILABLE
+    return deepface_available
 
 
 def is_emotion_detection_available():
@@ -70,9 +46,9 @@ def is_emotion_detection_available():
 
 def get_emotion_detection_status():
     return {
-        "deepface_available": DEEPFACE_AVAILABLE,
+        "deepface_available": deepface_available,
         "deepface_error": DEEPFACE_ERROR,
-        "primary_model": "DeepFace" if DEEPFACE_AVAILABLE else "fallback",
+        "primary_model": "DeepFace" if deepface_available else "fallback",
     }
 
 
@@ -92,9 +68,15 @@ def _face_crop_to_temp_jpg(face_bgr):
 
 
 def _analyze_deepface_file(img_path, num_passes):
-    global DeepFace, emotion_model
-    if not DEEPFACE_AVAILABLE or DeepFace is None:
+    # Import DeepFace if available
+    if not deepface_available:
         raise MLModelError("DeepFace not available")
+
+    try:
+        from deepface import DeepFace as _DeepFace
+        DeepFace = _DeepFace
+    except ImportError:
+        raise MLModelError("DeepFace import failed")
 
     emotion_results = []
     kwargs = {
@@ -196,27 +178,66 @@ def _create_emotion_response(emotion_data, face_box, num_passes, model_name):
 
 def analyze_emotion(img, num_passes=None, enforce_detection=None):
     """
-    OpenCV face detection -> crop -> DeepFace.analyze on temp file.
-    If DeepFace fails, returns neutral (face still reported detected when OpenCV found it).
+    OpenCV face detection -> crop -> DeepFace multi-inference with majority voting.
+    If confidence < 0.5, return uncertain. Falls back to neutral when DeepFace unavailable.
     """
     num_passes = num_passes or DEEPFACE_NUM_PASSES
     enforce_detection = enforce_detection if enforce_detection is not None else False
 
     try:
         validate_image_dimensions(img)
-        face_info = validate_face_detected(img)
-        face_box = face_info["main_face"]
-        face_rect = (face_box["x"], face_box["y"], face_box["width"], face_box["height"])
-        face_bgr = extract_face_region(img, face_rect)
+
+        # Enhanced OpenCV face detection
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+
+        if len(faces) == 0:
+            # No face detected - return neutral with low confidence
+            print("[EMOTION] No face detected - returning neutral")
+            return _create_emotion_response(
+                {
+                    "emotion": "neutral",
+                    "confidence": 0.3,
+                    "all_emotions": {
+                        "angry": 0.0,
+                        "disgust": 0.0,
+                        "fear": 0.0,
+                        "happy": 0.0,
+                        "sad": 0.0,
+                        "surprise": 0.0,
+                        "neutral": 0.3,
+                    },
+                },
+                {"x": 0, "y": 0, "width": 0, "height": 0},
+                num_passes,
+                "no_face_detected",
+            )
+
+        # Use the largest face
+        faces = sorted(faces, key=lambda x: x[2] * x[3], reverse=True)
+        (x, y, w, h) = faces[0]
+
+        # Crop and resize face
+        face_roi = img[y:y+h, x:x+w]
+        face_resized = cv2.resize(face_roi, (224, 224))
+
+        face_box = {"x": int(x), "y": int(y), "width": int(w), "height": int(h)}
 
         tmp_path = None
         try:
-            tmp_path = _face_crop_to_temp_jpg(face_bgr)
-            if DEEPFACE_AVAILABLE:
+            tmp_path = _face_crop_to_temp_jpg(face_resized)
+            if deepface_available:
                 emotion_results = _analyze_deepface_file(tmp_path, num_passes)
-                return _aggregate_emotion_results(
-                    emotion_results, face_box, num_passes, "DeepFace"
-                )
+                result = _aggregate_emotion_results(emotion_results, face_box, num_passes, "DeepFace")
+
+                # Check confidence threshold
+                if result["confidence"] < 0.5:
+                    result["emotion"] = "uncertain"
+                    result["confidence"] = 0.3
+
+                print(f"[EMOTION] Final result: emotion={result['emotion']}, confidence={result['confidence']}")
+                return result
         except (MLModelError, Exception) as e:
             print(f"[EMOTION] DeepFace path failed: {e}")
         finally:
@@ -227,7 +248,7 @@ def analyze_emotion(img, num_passes=None, enforce_detection=None):
                     pass
 
         print("[EMOTION] Using neutral fallback (DeepFace unavailable or failed).")
-        return _create_emotion_response(
+        result = _create_emotion_response(
             {
                 "emotion": "neutral",
                 "confidence": 0.0,
@@ -245,8 +266,29 @@ def analyze_emotion(img, num_passes=None, enforce_detection=None):
             num_passes,
             "fallback",
         )
+        print(f"[EMOTION] Fallback result: emotion={result['emotion']}, confidence={result['confidence']}")
+        return result
 
     except (ImageProcessingError, MLModelError):
         raise
     except Exception as e:
-        raise MLModelError(f"Emotion analysis error: {str(e)}")
+        print(f"[EMOTION] Unexpected error: {e}")
+        # Return safe neutral response on any error
+        return _create_emotion_response(
+            {
+                "emotion": "neutral",
+                "confidence": 0.0,
+                "all_emotions": {
+                    "angry": 0.0,
+                    "disgust": 0.0,
+                    "fear": 0.0,
+                    "happy": 0.0,
+                    "sad": 0.0,
+                    "surprise": 0.0,
+                    "neutral": 1.0,
+                },
+            },
+            {"x": 0, "y": 0, "width": 0, "height": 0},
+            num_passes,
+            "error_fallback",
+        )

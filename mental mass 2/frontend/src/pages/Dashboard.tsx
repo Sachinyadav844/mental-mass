@@ -18,6 +18,7 @@ import {
 } from "@/components/DashboardCharts";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { useGlobalSocket } from "@/hooks/useSocket";
 import api from "@/services/axiosConfig";
 
 const stats = [
@@ -97,9 +98,54 @@ const Dashboard = () => {
   const [riskData, setRiskData] = useState<Array<{ range: string; count: number; fill: string }>>([]);
   const { toast } = useToast();
 
+  // Initialize Socket.IO connection
+  const socket = useGlobalSocket();
+
   useEffect(() => {
     fetchDashboardData();
   }, []);
+
+  // Listen for real-time dashboard updates
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleDashboardUpdate = (data: any) => {
+      console.log("[Dashboard] Received real-time update:", data);
+      
+      // Refresh data to get latest updates
+      // This could be optimized by directly updating state with the socket data
+      fetchDashboardData();
+    };
+
+    const handleSessionCreated = (data: any) => {
+      console.log("[Dashboard] New session created:", data);
+      
+      // Show toast notification for new session
+      toast({
+        title: "New Session",
+        description: "Your latest analysis has been recorded",
+      });
+      
+      // Refresh dashboard data
+      fetchDashboardData();
+    };
+
+    const handleEmotionDetected = (data: any) => {
+      console.log("[Dashboard] Emotion detected:", data);
+    };
+
+    // Subscribe to Socket.IO events
+    socket.on("dashboard_update", handleDashboardUpdate);
+    socket.on("session_created", handleSessionCreated);
+    socket.on("emotion_detected", handleEmotionDetected);
+
+    // Cleanup listeners on unmount
+    return () => {
+      socket.off("dashboard_update", handleDashboardUpdate);
+      socket.off("session_created", handleSessionCreated);
+      socket.off("emotion_detected", handleEmotionDetected);
+    };
+  }, [socket, toast]);
 
   const fetchDashboardData = async () => {
     try {
@@ -110,6 +156,47 @@ const Dashboard = () => {
       if (sessions.length === 0) {
         setLoading(false);
         console.log("No sessions data available");
+        
+        // Set empty data with meaningful defaults
+        setStats([
+          {
+            label: "Average Mood Score",
+            value: "--",
+            sub: "No data yet",
+            icon: TrendingUp,
+            color: "bg-primary/10 text-primary",
+            trend: "up",
+          },
+          {
+            label: "Risk Level",
+            value: "--",
+            sub: "No data yet",
+            icon: Award,
+            color: "bg-warning-soft text-warning",
+            trend: "neutral",
+          },
+          {
+            label: "Most Frequent Emotion",
+            value: "--",
+            sub: "No data yet",
+            icon: Smile,
+            color: "bg-success-soft text-success",
+            trend: "up",
+          },
+          {
+            label: "Total Sessions",
+            value: "0",
+            sub: "No sessions",
+            icon: Activity,
+            color: "bg-lavender-soft text-lavender",
+            trend: "up",
+          },
+        ]);
+        
+        setTrendData([]);
+        setEmotionData([]);
+        setRiskData([]);
+        
         return;
       }
 
@@ -206,9 +293,23 @@ const Dashboard = () => {
       setRiskData(newRiskData);
     } catch (error) {
       console.error("Failed to fetch dashboard data:", error);
+      
+      // Show more specific error messages
+      let errorMessage = "Failed to load dashboard data";
+      
+      if (error instanceof Error) {
+        if (error.message.includes("401") || error.message.includes("Unauthorized")) {
+          errorMessage = "Please log in to view your dashboard";
+        } else if (error.message.includes("Network")) {
+          errorMessage = "Network error - please check your connection";
+        } else if (error.message.includes("timeout")) {
+          errorMessage = "Request timeout - server took too long to respond";
+        }
+      }
+      
       toast({
         title: "Error",
-        description: "Failed to load dashboard data",
+        description: errorMessage,
         variant: "destructive",
       });
     } finally {

@@ -52,6 +52,8 @@ def calculate_mood_score(emotion, sentiment, self_score=None):
         # Clamp final score to 0-100
         final_score = max(0, min(100, final_score))
         
+        print(f"[SCORE] Emotion: {emotion} ({emotion_score}), Sentiment: {sentiment} ({sentiment_score}), Final: {final_score}")
+        
         # Determine risk level
         risk_level = get_risk_level(final_score)
         risk_color = RISK_COLORS.get(risk_level, '#999999')

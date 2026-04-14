@@ -1,6 +1,6 @@
 """
-Sentiment: HuggingFace Cardiff NLP RoBERTa only. No rule-based fallback.
-When the model is missing or inference fails, returns neutral with fixed confidence.
+Sentiment: Rule-based analysis with optional HuggingFace Cardiff NLP RoBERTa.
+When the model is missing or inference fails, uses rule-based fallback.
 """
 import os
 import re
@@ -14,41 +14,10 @@ from config import (
     POSITIVE_KEYWORDS,
 )
 
-sentiment_model = None
-SENTIMENT_AVAILABLE = False
+# Import global models from ai_config
+from ml.ai_config import sentiment_available, sentiment_model
 
-
-def _pipeline_device():
-    """Use GPU when available; otherwise CPU (-1)."""
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            return 0
-    except ImportError:
-        pass
-    return -1
-
-
-def initialize_sentiment_pipeline():
-    global sentiment_model, SENTIMENT_AVAILABLE
-
-    try:
-        from transformers import pipeline
-
-        print("[SENTIMENT] Loading HuggingFace model...")
-        device = _pipeline_device()
-        sentiment_model = pipeline(
-            "sentiment-analysis",
-            model=SENTIMENT_PRIMARY_MODEL,
-            device=device,
-        )
-        SENTIMENT_AVAILABLE = True
-        print("Sentiment model loaded successfully")
-    except Exception as e:
-        print("Sentiment model failed:", e)
-        sentiment_model = None
-        SENTIMENT_AVAILABLE = False
+SENTIMENT_AVAILABLE = sentiment_available
 
 
 def preprocess_for_inference(text: str) -> str:
@@ -72,6 +41,26 @@ def extract_emotion_keywords(text: str):
     return sorted(set(keywords))
 
 
+def rule_based_sentiment(text: str) -> dict:
+    """Rule-based sentiment analysis using keyword matching."""
+    text_lower = text.lower()
+    positive_count = sum(1 for word in POSITIVE_KEYWORDS if word in text_lower)
+    negative_count = sum(1 for word in NEGATIVE_KEYWORDS if word in text_lower)
+
+    total_keywords = positive_count + negative_count
+    if total_keywords == 0:
+        return {"sentiment": "neutral", "confidence": 0.5}
+
+    if positive_count > negative_count:
+        confidence = min(0.8, 0.5 + (positive_count / total_keywords) * 0.3)
+        return {"sentiment": "positive", "confidence": confidence}
+    elif negative_count > positive_count:
+        confidence = min(0.8, 0.5 + (negative_count / total_keywords) * 0.3)
+        return {"sentiment": "negative", "confidence": confidence}
+    else:
+        return {"sentiment": "neutral", "confidence": 0.6}
+
+
 def _label_to_sentiment(label):
     label_upper = str(label).upper()
     if label_upper == "LABEL_2":
@@ -85,14 +74,13 @@ def _label_to_sentiment(label):
 
 def analyze_sentiment(text):
     """
-    Run Cardiff RoBERTa when loaded; otherwise neutral fallback.
+    Run Cardiff RoBERTa when loaded; otherwise rule-based fallback.
     Returns dict with sentiment, confidence; optional source for fallback paths.
     """
     if not isinstance(text, str):
         return {
             "sentiment": "neutral",
             "confidence": 0.5,
-            "source": "fallback",
         }
 
     text_input = preprocess_for_inference(text)[:512]
@@ -100,37 +88,36 @@ def analyze_sentiment(text):
         return {
             "sentiment": "neutral",
             "confidence": 0.5,
-            "source": "fallback",
         }
 
-    if sentiment_model is None:
-        return {
-            "sentiment": "neutral",
-            "confidence": 0.5,
-            "source": "fallback",
-        }
+    # Try ML model first
+    if sentiment_model is not None:
+        try:
+            result = sentiment_model(text_input)[0]
+            if DEBUG or os.getenv("SENTIMENT_DEBUG", "").lower() in ("1", "true", "yes"):
+                print("Input text:", text_input)
+                print("Model output:", result)
 
-    try:
-        result = sentiment_model(text_input)[0]
-        if DEBUG or os.getenv("SENTIMENT_DEBUG", "").lower() in ("1", "true", "yes"):
-            print("Input text:", text_input)
-            print("Model output:", result)
+            label = result.get("label", "LABEL_1")
+            confidence = float(result.get("score", 0.5))
+            sentiment = _label_to_sentiment(label)
 
-        label = result.get("label", "LABEL_1")
-        confidence = float(result.get("score", 0.5))
-        sentiment = _label_to_sentiment(label)
+            print(f"[SENTIMENT] ML Result: sentiment={sentiment}, confidence={confidence}")
+            return {
+                "sentiment": sentiment,
+                "confidence": round(confidence, 4),
+            }
+        except Exception as e:
+            print("Sentiment ML error:", e)
+            print("[SENTIMENT] Falling back to rule-based analysis")
 
-        return {
-            "sentiment": sentiment,
-            "confidence": round(confidence, 4),
-        }
-    except Exception as e:
-        print("Sentiment error:", e)
-        return {
-            "sentiment": "neutral",
-            "confidence": 0.5,
-            "source": "fallback",
-        }
+    # Rule-based fallback
+    result = rule_based_sentiment(text_input)
+    print(f"[SENTIMENT] Rule-based Result: sentiment={result['sentiment']}, confidence={result['confidence']}")
+    return {
+        "sentiment": result["sentiment"],
+        "confidence": round(result["confidence"], 4),
+    }
 
 
 def is_sentiment_available():
@@ -153,12 +140,7 @@ def analyze_text_sentiment(text):
     is_short_text = word_count < SENTIMENT_SHORT_TEXT_THRESHOLD
 
     result = analyze_sentiment(stripped)
-    source = result.get("source")
-    model_used = (
-        SENTIMENT_PRIMARY_MODEL
-        if SENTIMENT_AVAILABLE and source != "fallback"
-        else "fallback"
-    )
+    model_used = SENTIMENT_PRIMARY_MODEL if SENTIMENT_AVAILABLE else "unavailable"
 
     return {
         "sentiment": result["sentiment"],

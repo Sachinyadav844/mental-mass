@@ -5,6 +5,7 @@ from flask import Blueprint, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from utils.error_handler import error_response, success_response, ValidationError, DatabaseError
 from utils.logger import log_access, log_error
+from utils.socketio_manager import emit_dashboard_update, emit_session_created
 from database import (
     get_user_sessions, get_session_stats, save_session_data
 )
@@ -131,6 +132,22 @@ def create_session():
         # =====================================================================
         try:
             db_session = save_session_data(session_data)
+            
+            # Emit real-time dashboard update
+            emit_dashboard_update({
+                "session_id": db_session.id,
+                "emotion": session_data.get('emotion'),
+                "sentiment": session_data.get('sentiment'),
+                "mood_score": session_data.get('mood_score'),
+                "risk_level": session_data.get('risk_level'),
+                "timestamp": db_session.timestamp.isoformat()
+            })
+            
+            # Emit session created event
+            emit_session_created({
+                'session_id': db_session.id,
+                'timestamp': db_session.timestamp.isoformat()
+            })
             
             return success_response({
                 'session_id': db_session.id,

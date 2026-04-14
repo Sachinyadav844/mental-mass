@@ -3,7 +3,7 @@ Chatbot routes
 Handles POST /chatbot endpoint
 """
 from flask import Blueprint, request
-from flask_jwt_extended import get_jwt_identity
+from flask_jwt_extended import get_jwt_identity, jwt_required
 from utils.error_handler import error_response, success_response, ValidationError, MLModelError
 from utils.logger import log_access, log_error
 from config import (
@@ -13,109 +13,108 @@ from config import (
     GEMINI_MODEL,
 )
 from database import get_user_sessions
+from ml.ai_config import chatbot_available, gemini_model
 import uuid
+import os
+import time
+from collections import defaultdict
+
+# Rate limiting storage (in production, use Redis)
+rate_limit_store = defaultdict(list)
+
+CHATBOT_RATE_LIMIT = 1  # requests per second per user
 
 chatbot_bp = Blueprint('chatbot', __name__)
 
-# Global chatbot model (lazy loaded)
-_chatbot_model = None
 
+def check_rate_limit(user_id):
+    """Check if user has exceeded rate limit"""
+    current_time = time.time()
+    user_requests = rate_limit_store[user_id]
 
-def load_chatbot_model():
-    """Load Gemini model"""
-    global _chatbot_model
-    
-    if _chatbot_model is not None:
-        return _chatbot_model
-    
-    try:
-        import google.generativeai as genai
-        from config import GEMINI_API_KEY
-        
-        genai.configure(api_key=GEMINI_API_KEY)
-        _chatbot_model = genai.GenerativeModel(GEMINI_MODEL)
-        print(f"[CHATBOT] Gemini model loaded: {GEMINI_MODEL}")
-        return _chatbot_model
-    
-    except Exception as e:
-        print(f"[CHATBOT] Failed to load Gemini model: {str(e)}")
-        raise MLModelError(f'Failed to load chatbot model: {str(e)}')
+    # Remove requests older than 1 second
+    user_requests[:] = [req_time for req_time in user_requests if current_time - req_time < 1.0]
 
+    # Check if under limit
+    if len(user_requests) >= CHATBOT_RATE_LIMIT:
+        return False
 
-def is_off_topic(message):
-    """Check if message is off-topic (not mental health related)"""
-    message_lower = message.lower()
-    
-    # Mental health keywords
-    mental_health_keywords = [
-        'stress', 'anxiety', 'depression', 'mood', 'emotion', 'mental', 'wellness',
-        'sad', 'happy', 'angry', 'fear', 'worry', 'panic', 'therapy', 'counseling',
-        'feeling', 'mood', 'emotional', 'psychological', 'mind', 'brain', 'health'
-    ]
-    
-    has_mental_health = any(keyword in message_lower for keyword in mental_health_keywords)
-    
-    # Off-topic if no mental health keywords
-    return not has_mental_health
-
-
-def get_off_topic_response():
-    """Get response for off-topic messages"""
-    return {
-        'reply': "I can only help with mental wellness topics. Please ask me about stress, anxiety, emotions, or other mental health concerns.",
-        'is_off_topic': True,
-        'model': 'filter'
-    }
+    # Add current request
+    user_requests.append(current_time)
+    return True
 
 
 def generate_chatbot_response(message, user_id, history=None):
     """
-    Generate chatbot response using Gemini
-    
+    Generate chatbot response using Gemini with ChatGPT fallback
+
     Args:
         message: User message
         user_id: User ID for context
         history: Recent session history
-    
+
     Returns:
         Dictionary with response
     """
     try:
-        # Check for off-topic message
-        if is_off_topic(message):
-            return get_off_topic_response()
-        
-        # Try to load model
+        # Strict system prompt for mental health only
+        SYSTEM_PROMPT = """
+You are a mental health assistant.
+Answer only about stress, anxiety, mood, emotions.
+If user asks anything else, politely refuse.
+Give short, helpful responses.
+"""
+
+        # Try Gemini first
+        if chatbot_available and gemini_model:
+            try:
+                response = gemini_model.generate_content(
+                    SYSTEM_PROMPT + "\nUser: " + message
+                )
+
+                reply = response.text.strip()
+
+                if not reply:
+                    reply = "I'm here to help with your mental health. Can you tell me how you're feeling?"
+
+                return {
+                    'reply': reply,
+                    'model': 'Gemini',
+                    'is_off_topic': False
+                }
+            except Exception as e:
+                print(f"[CHATBOT] Gemini failed: {e}")
+
+        # Fallback to OpenAI ChatGPT
         try:
-            model = load_chatbot_model()
-        except MLModelError:
-            return {
-                'reply': 'I apologize, but the chatbot service is currently unavailable. Please try again later.',
-                'model': 'unavailable',
-                'note': 'Model loading failed'
-            }
-        
-        system_prompt = (
-            "You are a mental health assistant. Only provide supportive, non-diagnostic "
-            "guidance about stress, anxiety, mood, emotional well-being, and mental health. "
-            "Do not give medical diagnoses or medication advice. Do not answer unrelated topics. "
-            "If the user asks about something outside mental health, briefly redirect them to "
-            "mental wellness. Return only mental health advice in your reply."
-        )
-        
-        # Generate response using Gemini
-        import google.generativeai as genai
-        
-        response = model.generate_content(f"{system_prompt}\n\nUser: {message}")
-        
-        reply = response.text.strip() if response.text else "I'm here to help with your mental wellness. How are you feeling today?"
-        
+            import openai
+            openai.api_key = os.getenv("OPENAI_API_KEY")
+            if openai.api_key:
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": message}
+                    ],
+                    max_tokens=150,
+                    temperature=0.7
+                )
+                reply = response.choices[0].message.content.strip()
+                return {
+                    'reply': reply,
+                    'model': 'ChatGPT',
+                    'is_off_topic': False
+                }
+        except Exception as e:
+            print(f"[CHATBOT] ChatGPT failed: {e}")
+
+        # Final fallback
         return {
-            'reply': reply,
-            'model': 'Gemini',
-            'is_off_topic': False
+            'reply': "I'm here to help with your mental health concerns. I understand you're feeling stressed - that's completely valid. Would you like to talk about what's causing your stress or share more about how you're feeling?",
+            'model': 'fallback',
+            'note': 'Using mental health focused fallback response'
         }
-    
+
     except Exception as e:
         print(f"[CHATBOT] Error: {str(e)}")
         return {
@@ -126,6 +125,7 @@ def generate_chatbot_response(message, user_id, history=None):
 
 
 @chatbot_bp.route('/chatbot', methods=['POST'])
+@jwt_required()
 def chatbot():
     """
     AI chatbot for mental wellness support
@@ -147,10 +147,17 @@ def chatbot():
     try:
         user_id = get_jwt_identity()
         log_access('/chatbot', 'POST', user_id)
-        print('[CHATBOT] Request received', 'user_id=', user_id)
-        print('[CHATBOT] request.files=', list(request.files.keys()))
-        print('[CHATBOT] request.json=', request.get_json(silent=True))
-        
+
+        # Rate limiting check
+        if not check_rate_limit(user_id):
+            return error_response(
+                ValidationError('Rate limit exceeded. Please wait before sending another message.'),
+                429
+            )
+
+        # Safe logging (no sensitive data)
+        print(f"[CHATBOT] Request from user {user_id[:8]}...")
+
         # =====================================================================
         # PARSE INPUT
         # =====================================================================
